@@ -239,13 +239,31 @@ class TSTEncoder(nn.Module):
                  res_attention=False, n_layers=1, pre_norm=False, store_attn=False):
         super().__init__()
 
-        self.layers = nn.ModuleList([TSTEncoderLayer(d_model, n_heads=n_heads, 
-                                                      d_ff=d_ff, norm=norm,
-                                                      attn_dropout=attn_dropout, dropout=dropout,
-                                                      activation=activation, res_attention=res_attention,
-                                                      pre_norm=pre_norm, store_attn=store_attn) 
-                                     for i in range(n_layers)])
+        self.layers = nn.ModuleList([
+            TSTEncoderLayer(d_model, n_heads=n_heads, d_ff=d_ff, norm=norm,
+                            attn_dropout=attn_dropout, dropout=dropout,
+                            activation=activation, res_attention=res_attention,
+                            pre_norm=pre_norm, store_attn=store_attn) 
+            for _ in range(n_layers)
+        ])
+        
         self.res_attention = res_attention
+
+    def forward(self, src: Tensor):
+        """
+        src: tensor [bs x q_len x d_model]
+        """
+        output = src
+        scores = None
+        if self.res_attention:
+            for layer in self.layers:
+                output, scores = layer(output, prev=scores)
+            return output
+        else:
+            for layer in self.layers:
+                output = layer(output)
+            return output
+
 
 class TSTEncoderLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=256, store_attn=False,
