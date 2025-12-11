@@ -171,7 +171,6 @@ class PretrainHead(nn.Module):
         return x
 
 
-# Adjust the initialization to set heads
 class PatchTSTEncoder(nn.Module):
     def __init__(self, c_in, num_patch, patch_len, 
                  n_layers=3, d_model=128, n_heads=8, shared_embedding=True,
@@ -187,12 +186,52 @@ class PatchTSTEncoder(nn.Module):
         self.shared_embedding = shared_embedding        
 
         # Input encoding (as before)...
+        if not shared_embedding: 
+            self.W_P = nn.ModuleList()
+            for _ in range(self.n_vars): self.W_P.append(nn.Linear(patch_len, d_model))
+        else:
+            self.W_P = nn.Linear(patch_len, d_model)      
+
+        # Positional encoding
+        self.W_pos = positional_encoding(pe, learn_pe, num_patch, d_model)
+
+        # Residual dropout
+        self.dropout = nn.Dropout(dropout)
 
         # Encoder
-        self.encoder = TSTEncoder(d_model, n_heads=n_heads, d_ff=d_ff, norm=norm, 
+        self.encoder = TSTEncoder(d_model, n_heads, d_ff=d_ff, norm=norm, 
                                   attn_dropout=attn_dropout, dropout=dropout,
-                                  pre_norm=pre_norm, activation=act, res_attention=res_attention,
-                                  n_layers=n_layers, store_attn=store_attn)
+                                  pre_norm=pre_norm, activation=act, 
+                                  res_attention=res_attention, n_layers=n_layers, 
+                                  store_attn=store_attn)
+
+    def forward(self, x: Tensor) -> Tensor:          
+        """
+        x: tensor [bs x num_patch x n_vars x patch_len]
+        """
+        bs, num_patch, n_vars, patch_len = x.shape
+        # Input encoding
+        if not self.shared_embedding:
+            x_out = []
+            for i in range(n_vars): 
+                z = self.W_P[i](x[:,:,i,:])
+                x_out.append(z)
+            x = torch.stack(x_out, dim=2)
+        else:
+            x = self.W_P(x)                                                      # x: [bs x num_patch x n_vars x d_model]
+        
+        x = x.transpose(1, 2)                                                     # x: [bs x n_vars x num_patch x d_model]        
+
+        u = torch.reshape(x, (bs * n_vars, num_patch, self.d_model))              # u: [bs * n_vars x num_patch x d_model]
+        u = self.dropout(u + self.W_pos)                                         # u: [bs * n_vars x num_patch x d_model]
+
+        # Encoder
+        z = self.encoder(u)                                                      # z: [bs * n_vars x num_patch x d_model]
+        z = torch.reshape(z, (-1, n_vars, num_patch, self.d_model))               # z: [bs x n_vars x num_patch x d_model]
+        z = z.permute(0, 1, 3, 2)                                                   # z: [bs x n_vars x d_model x num_patch]
+
+        return z
+
 
 class TSTEncoder(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=None, 
